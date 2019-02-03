@@ -1,5 +1,25 @@
 #!/usr/bin/env python
 
+"""
+Program written by: Duncan Mazza
+*(code included from external sources, see below)*
+
+This program enables an XBox Kinect to act as an external camera enabled by
+tensorflow object detection software. The program automatically switches the
+video source between the Kinect's RGB camera and IR camera depending on how
+dark the environment is. The main purpose of the program is to detect how many
+people detected in the frame at any given point in time. This number for each
+frame is piped into a deque that contains data for the last 10 frames; the
+maximum value in the deque is what the program returns.
+
+This program runs using the tf_trt_models software, OpenCV, and libfreenect;
+snippets from the git repos of tf_trt_models and libfreenect are used in the
+following software.
+
+tf_trt_models: https://github.com/NVIDIA-AI-IOT/tf_trt_models
+libfreenect: https://github.com/OpenKinect/libfreenect
+"""
+
 import cv2
 from PIL import Image
 import sys
@@ -13,13 +33,9 @@ from tf_trt_models.pbtxt_converter import pbtxt_to_dic
 from tensorflow.core.framework import graph_pb2 as gpb
 from google.protobuf import text_format as pbtf
 from freenect import sync_get_depth as kinect_get_depth, sync_get_video as kinect_get_video
+import random
 
 #################
-"""Detecting Objects in Video Code"""
-# Adapting code from the example notebook from repository to work with video
-# instead of static images. Imports the dictionary using a function I wrote
-# in pbtxt_converter - takes the argument of LABELS_PATH. Displays image
-# detection from webcam video feed.
 
 MODEL = 'ssd_mobilenet_v1_coco'
 DATA_DIR = '/data/'
@@ -29,6 +45,7 @@ IMAGE_PATH = './data/IMG_5308.jpg'
 LABELS_PATH = './data/inception_v2_class_labels.pbtxt'
 
 IR_BOOL=True # if false, the program will only use the rgb camera
+
 #################
 
 def pretty_depth(depth): # function from libfreenect examples
@@ -49,25 +66,28 @@ def pretty_depth(depth): # function from libfreenect examples
 
 def display_webcam(dictionary):
     # capturing video from camera, storing in 'cap'. 0 selects the camera
-    n = 0
+    n = 0 # frame counter
+    person_list = [0,0,0,0,0,0,0,0,0,0]
+    global person_count
 
     while True:
         sum_image_brightness = 0
         image_brightness = 0
-        i = j= counter = 0
+        i=j=counter = 0
         if (n % 25 == 0):
             (frame,_) = kinect_get_video()
             x_dim = frame.shape[0] -1
             y_dim = frame.shape[1] -1
             if i < x_dim:
                 if j < y_dim:
-                    sum_image_brightness += frame[i][j][counter%3]
-                    i += 10
-                    j += 10
-                    counter += 1
-                    print(sum_image_brightness)
-            image_brightness = (sum_image_brightness*10)/(counter)
-            if image_brightness < 40:
+                    for k in range(0,2):
+                        sum_image_brightness += frame[i][j][k]
+                        i += 10
+                        j += 10
+                        counter += 3
+            image_brightness = (sum_image_brightness/(counter))
+
+            if image_brightness < 30:
                 IR_BOOL = True
             else:
                 IR_BOOL = False
@@ -87,20 +107,18 @@ def display_webcam(dictionary):
         #image_resized = np.array(image.resize((300, 300)))
         #image_resized = np.resize(image, (300,300))
 
-        scores, boxes, classes, num_detections = tf_sess.run(
-                                                            [tf_scores,
+        scores, boxes, classes, num_detections = tf_sess.run([tf_scores,
                                                              tf_boxes,
                                                              tf_classes,
                                                              tf_num_detections],
                                                              feed_dict=
-                                                             {
-        tf_input: image[None, ...]})
+                                                                {tf_input: image[None, ...]})
 
         boxes = boxes[0] # index by 0 to remove batch dimension
         scores = scores[0]
         classes = classes[0]
         num_detections = num_detections[0]
-
+        frame_count = 0
         #################
         # Display rectangles on the image
 
@@ -117,32 +135,31 @@ def display_webcam(dictionary):
             bottomright_y = int(box[0])
             score = round(scores[i], 2)
 
-            cv2.rectangle(
-                          image,
-                          (topleft_x, topleft_y),
-                          (bottomright_x, bottomright_y),
-                          (0, 255, 0),
-                          1,
-                          8,
-                          0
-                          )
+            cv2.rectangle(image,(topleft_x, topleft_y),
+                          (bottomright_x, bottomright_y),(0, 255, 0),1,8,0)
 
             font = cv2.FONT_HERSHEY_COMPLEX
             # Dictionary contains classifications associated classes[i]
             dictionary_index = classes[i]
-            cv2.putText(
-                        image,
+            cv2.putText(image,
                         '({}) {}%'.format(dictionary[dictionary_index],
-                                          round(scores[i]*100), 4),
-                        (topleft_x + 5, topleft_y - 7),
-                        font,
-                        0.5,
-                        (255,255,255), 1, cv2.LINE_AA
-                        )
+                        round(scores[i]*100), 4),(topleft_x + 5, topleft_y - 7),
+                        font,0.5,(255,255,255), 1, cv2.LINE_AA)
+            if dictionary[dictionary_index] == 'person':
+                frame_count+=1
+            frame_count +=1
 
         # Displaying the image in a window labeled Object Detection
         cv2.imshow('Object Detection', image)
         n += 1
+        person_list.append(frame_count)
+        person_list.pop()
+        person_count = person_list[0]
+        for i in range(1,len(person_list)):
+            if person_list[i] > person_list[i-1]:
+                person_count = person_list[i]
+
+        print(person_list)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             print('An error occured with OpenCV')
